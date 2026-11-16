@@ -96,7 +96,7 @@ docker compose up -d
  Container localstack-dynamodb  Started
 ```
 
-La prima pornire Docker descarcă imaginea `localstack/localstack:4.12` (~1 GB), deci poate dura câteva minute. Așteaptă până când coloana `STATUS` arată **`(healthy)`** (de obicei 5–15 secunde):
+La prima pornire Docker descarcă imaginea `localstack/localstack:4.12` (~1,9 GB pe disc), deci poate dura câteva minute. Așteaptă până când coloana `STATUS` arată **`(healthy)`** (de obicei 5–15 secunde):
 
 ```bash
 docker compose ps
@@ -395,7 +395,7 @@ Curățare completă (opțional):
 
 ```bash
 deactivate                                   # ieșire din mediul virtual
-docker image rm localstack/localstack:4.12   # șterge imaginea (~1 GB)
+docker image rm localstack/localstack:4.12   # șterge imaginea (~1,9 GB)
 ```
 
 Apoi poți șterge directorul `.venv`.
