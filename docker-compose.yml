@@ -1,0 +1,17 @@
+services:
+  localstack:
+    container_name: localstack-dynamodb
+    # Versiune fixată a imaginii community care pornește FĂRĂ LOCALSTACK_AUTH_TOKEN.
+    # Imaginile noi (latest, 2026.x) cer token - vezi README, secțiunea "Alternativă".
+    image: localstack/localstack:4.12
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=dynamodb
+      - DEBUG=0
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
