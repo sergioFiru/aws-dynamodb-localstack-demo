@@ -1,7 +1,6 @@
-"""Acces la DynamoDB (rulat local în LocalStack) prin boto3: funcții CRUD pentru tabelul Tasks."""
+"""Acces la DynamoDB (rulat local în LocalStack) prin boto3: catalog de note pentru studenți."""
 
 import os
-import uuid
 from datetime import datetime, timezone
 
 import boto3
@@ -10,7 +9,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 
 ENDPOINT_URL = os.getenv("DYNAMODB_ENDPOINT", "http://localhost:4566")
 REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-TABLE_NAME = os.getenv("TABLE_NAME", "Tasks")
+TABLE_NAME = os.getenv("TABLE_NAME", "Grades")
 
 
 class DbError(Exception):
@@ -29,7 +28,7 @@ def get_client():
     )
 
 
-def _call(fn, **kwargs):
+def _call(fn, condition_msg="Condiția nu a fost îndeplinită.", **kwargs):
     """Apelează boto3 și traduce erorile comune în mesaje clare."""
     try:
         return fn(**kwargs)
@@ -45,13 +44,29 @@ def _call(fn, **kwargs):
         if code == "ResourceInUseException":
             raise DbError(f"Tabelul '{TABLE_NAME}' există deja.")
         if code == "ConditionalCheckFailedException":
-            raise DbError("Task-ul nu există.")
+            raise DbError(condition_msg)
         raise DbError(f"Eroare DynamoDB ({code}): {e.response['Error'].get('Message', '')}")
 
 
+def _validate_grade(grade):
+    if not isinstance(grade, int) or isinstance(grade, bool) or not 1 <= grade <= 10:
+        raise DbError(f"Notă invalidă: {grade!r}. Nota trebuie să fie un număr întreg între 1 și 10.")
+
+
+def _now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _key(student_id, course_id):
+    return {"student_id": {"S": student_id}, "course_id": {"S": course_id}}
+
+
 def _to_item(raw):
-    """Convertește formatul DynamoDB ({'S': '...'}) într-un dict simplu."""
-    return {k: v["S"] for k, v in raw.items()}
+    """Convertește formatul DynamoDB ({'S': '...'} / {'N': '9'}) într-un dict simplu."""
+    item = {}
+    for k, v in raw.items():
+        item[k] = int(v["N"]) if "N" in v else v["S"]
+    return item
 
 
 def create_table():
@@ -60,12 +75,12 @@ def create_table():
         client.create_table,
         TableName=TABLE_NAME,
         KeySchema=[
-            {"AttributeName": "user_id", "KeyType": "HASH"},   # partition key
-            {"AttributeName": "task_id", "KeyType": "RANGE"},  # sort key
+            {"AttributeName": "student_id", "KeyType": "HASH"},  # partition key
+            {"AttributeName": "course_id", "KeyType": "RANGE"},  # sort key
         ],
         AttributeDefinitions=[
-            {"AttributeName": "user_id", "AttributeType": "S"},
-            {"AttributeName": "task_id", "AttributeType": "S"},
+            {"AttributeName": "student_id", "AttributeType": "S"},
+            {"AttributeName": "course_id", "AttributeType": "S"},
         ],
         BillingMode="PAY_PER_REQUEST",
     )
@@ -78,60 +93,78 @@ def delete_table():
     client.get_waiter("table_not_exists").wait(TableName=TABLE_NAME, WaiterConfig={"Delay": 1, "MaxAttempts": 30})
 
 
-def add_task(user_id, title):
+def add_grade(student_id, course_id, course_name, grade, semester):
+    _validate_grade(grade)
     item = {
-        "user_id": user_id,
-        "task_id": uuid.uuid4().hex[:8],
-        "title": title,
-        "status": "todo",
-        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "student_id": student_id,
+        "course_id": course_id,
+        "course_name": course_name,
+        "grade": grade,
+        "semester": semester,
+        "updated_at": _now(),
     }
     _call(
         get_client().put_item,
+        condition_msg=f"Nota pentru studentul '{student_id}' la cursul '{course_id}' există deja. "
+        "Folosește comanda 'update' pentru a o modifica.",
         TableName=TABLE_NAME,
-        Item={k: {"S": v} for k, v in item.items()},
+        Item={
+            "student_id": {"S": student_id},
+            "course_id": {"S": course_id},
+            "course_name": {"S": course_name},
+            "grade": {"N": str(grade)},
+            "semester": {"S": semester},
+            "updated_at": {"S": item["updated_at"]},
+        },
+        # Refuză duplicatele: scrie doar dacă nu există deja un item cu aceeași cheie.
+        ConditionExpression="attribute_not_exists(student_id)",
     )
     return item
 
 
-def get_task(user_id, task_id):
-    resp = _call(
-        get_client().get_item,
-        TableName=TABLE_NAME,
-        Key={"user_id": {"S": user_id}, "task_id": {"S": task_id}},
-    )
+def get_grade(student_id, course_id):
+    resp = _call(get_client().get_item, TableName=TABLE_NAME, Key=_key(student_id, course_id))
     return _to_item(resp["Item"]) if "Item" in resp else None
 
 
-def list_tasks(user_id):
-    """Toate task-urile unui user, cu Query pe partition key (nu Scan)."""
+def list_grades(student_id):
+    """Toate notele unui student, cu Query pe partition key (nu Scan). Sortate după course_id."""
     resp = _call(
         get_client().query,
         TableName=TABLE_NAME,
-        KeyConditionExpression="user_id = :u",
-        ExpressionAttributeValues={":u": {"S": user_id}},
+        KeyConditionExpression="student_id = :s",
+        ExpressionAttributeValues={":s": {"S": student_id}},
     )
-    return sorted((_to_item(i) for i in resp["Items"]), key=lambda t: t["created_at"])
+    return [_to_item(i) for i in resp["Items"]]
 
 
-def complete_task(user_id, task_id):
+def average(grades):
+    """Media notelor, calculată în Python (DynamoDB nu are funcții de agregare)."""
+    if not grades:
+        return None
+    return round(sum(g["grade"] for g in grades) / len(grades), 2)
+
+
+def update_grade(student_id, course_id, grade):
+    _validate_grade(grade)
     resp = _call(
         get_client().update_item,
+        condition_msg=f"Nu există nicio notă pentru studentul '{student_id}' la cursul '{course_id}'.",
         TableName=TABLE_NAME,
-        Key={"user_id": {"S": user_id}, "task_id": {"S": task_id}},
-        UpdateExpression="SET #s = :done",
-        ConditionExpression="attribute_exists(task_id)",
-        ExpressionAttributeNames={"#s": "status"},  # "status" e cuvânt rezervat în DynamoDB
-        ExpressionAttributeValues={":done": {"S": "done"}},
+        Key=_key(student_id, course_id),
+        UpdateExpression="SET grade = :g, updated_at = :u",
+        ConditionExpression="attribute_exists(student_id)",
+        ExpressionAttributeValues={":g": {"N": str(grade)}, ":u": {"S": _now()}},
         ReturnValues="ALL_NEW",
     )
     return _to_item(resp["Attributes"])
 
 
-def delete_task(user_id, task_id):
+def delete_grade(student_id, course_id):
     _call(
         get_client().delete_item,
+        condition_msg=f"Nu există nicio notă pentru studentul '{student_id}' la cursul '{course_id}'.",
         TableName=TABLE_NAME,
-        Key={"user_id": {"S": user_id}, "task_id": {"S": task_id}},
-        ConditionExpression="attribute_exists(task_id)",
+        Key=_key(student_id, course_id),
+        ConditionExpression="attribute_exists(student_id)",
     )

@@ -1,6 +1,6 @@
-"""CLI pentru gestionarea task-urilor în DynamoDB (LocalStack).
+"""CLI pentru catalogul de note în DynamoDB (LocalStack).
 
-Exemplu: python -m app.cli add ana "Citește documentația DynamoDB"
+Exemplu: python -m app.cli add --student S1 --course C1 --name "Rețele" --grade 9 --semester 2026-1
 """
 
 import argparse
@@ -8,50 +8,72 @@ import sys
 
 from app import db
 
+COLUMNS = [
+    ("student_id", "Student"),
+    ("course_id", "Curs"),
+    ("course_name", "Denumire"),
+    ("grade", "Nota"),
+    ("semester", "Semestru"),
+    ("updated_at", "Actualizat"),
+]
 
-def print_task(t):
-    mark = "[x]" if t["status"] == "done" else "[ ]"
-    print(f"{mark} {t['task_id']}  {t['title']}  (status: {t['status']}, creat: {t['created_at']})")
+
+def print_table(rows):
+    """Afișează rândurile ca tabel text simplu."""
+    headers = [h for _, h in COLUMNS]
+    data = [[str(r[k]) for k, _ in COLUMNS] for r in rows]
+    widths = [max(len(x) for x in col) for col in zip(headers, *data)]
+    sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+
+    def line(cells):
+        return "| " + " | ".join(c.ljust(w) for c, w in zip(cells, widths)) + " |"
+
+    print(sep)
+    print(line(headers))
+    print(sep)
+    for d in data:
+        print(line(d))
+    print(sep)
 
 
 def cmd_init(args):
     db.create_table()
-    print(f"Tabelul '{db.TABLE_NAME}' a fost creat (PK: user_id, SK: task_id).")
+    print(f"Tabelul '{db.TABLE_NAME}' a fost creat (PK: student_id, SK: course_id).")
 
 
 def cmd_add(args):
-    t = db.add_task(args.user_id, args.title)
-    print(f"Task adăugat pentru '{args.user_id}':")
-    print_task(t)
+    g = db.add_grade(args.student, args.course, args.name, args.grade, args.semester)
+    print("Notă adăugată:")
+    print_table([g])
 
 
 def cmd_get(args):
-    t = db.get_task(args.user_id, args.task_id)
-    if t is None:
-        print(f"Task-ul '{args.task_id}' nu există pentru '{args.user_id}'.")
+    g = db.get_grade(args.student, args.course)
+    if g is None:
+        print(f"Nu există nicio notă pentru studentul '{args.student}' la cursul '{args.course}'.")
         return 1
-    print_task(t)
+    print_table([g])
 
 
 def cmd_list(args):
-    tasks = db.list_tasks(args.user_id)
-    if not tasks:
-        print(f"Niciun task pentru '{args.user_id}'.")
+    grades = db.list_grades(args.student)
+    if not grades:
+        print(f"Studentul '{args.student}' nu are nicio notă.")
         return
-    print(f"Task-urile lui '{args.user_id}' ({len(tasks)}):")
-    for t in tasks:
-        print_task(t)
+    print(f"Notele studentului '{args.student}' ({len(grades)}):")
+    print_table(grades)
+    print(f"Media: {db.average(grades):.2f}")
 
 
-def cmd_complete(args):
-    t = db.complete_task(args.user_id, args.task_id)
-    print("Task marcat ca finalizat:")
-    print_task(t)
+def cmd_update(args):
+    g = db.update_grade(args.student, args.course, args.grade)
+    print("Notă actualizată:")
+    print_table([g])
 
 
 def cmd_delete(args):
-    db.delete_task(args.user_id, args.task_id)
-    print(f"Task-ul '{args.task_id}' a fost șters.")
+    db.delete_grade(args.student, args.course)
+    print(f"Nota studentului '{args.student}' la cursul '{args.course}' a fost ștearsă.")
 
 
 def cmd_drop(args):
@@ -60,31 +82,33 @@ def cmd_drop(args):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="python -m app.cli", description="Task-uri în DynamoDB pe LocalStack")
+    p = argparse.ArgumentParser(prog="python -m app.cli", description="Catalog de note în DynamoDB pe LocalStack")
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="creează tabelul Tasks").set_defaults(func=cmd_init)
-
-    s = sub.add_parser("add", help="adaugă un task")
-    s.add_argument("user_id")
-    s.add_argument("title")
-    s.set_defaults(func=cmd_add)
-
-    for name, func, help_ in [
-        ("get", cmd_get, "afișează un task"),
-        ("complete", cmd_complete, "marchează un task ca 'done' (UpdateItem)"),
-        ("delete", cmd_delete, "șterge un task (DeleteItem)"),
-    ]:
+    def cmd(name, func, help_, student=True, course=False):
         s = sub.add_parser(name, help=help_)
-        s.add_argument("user_id")
-        s.add_argument("task_id")
+        if student:
+            s.add_argument("--student", required=True, help="ID student, ex. S1")
+        if course:
+            s.add_argument("--course", required=True, help="ID curs, ex. C1")
         s.set_defaults(func=func)
+        return s
 
-    s = sub.add_parser("list", help="listează task-urile unui user (Query)")
-    s.add_argument("user_id")
-    s.set_defaults(func=cmd_list)
+    cmd("init", cmd_init, "creează tabelul Grades", student=False)
 
-    sub.add_parser("drop", help="șterge tabelul Tasks").set_defaults(func=cmd_drop)
+    s = cmd("add", cmd_add, "adaugă o notă (PutItem, refuză duplicatele)", course=True)
+    s.add_argument("--name", required=True, help="denumirea cursului")
+    s.add_argument("--grade", required=True, type=int, help="nota, întreg 1-10")
+    s.add_argument("--semester", required=True, help="ex. 2026-1")
+
+    cmd("get", cmd_get, "afișează o notă (GetItem)", course=True)
+    cmd("list", cmd_list, "toate notele unui student + media (Query)")
+
+    s = cmd("update", cmd_update, "modifică o notă existentă (UpdateItem)", course=True)
+    s.add_argument("--grade", required=True, type=int, help="noua notă, întreg 1-10")
+
+    cmd("delete", cmd_delete, "șterge o notă (DeleteItem)", course=True)
+    cmd("drop", cmd_drop, "șterge tabelul Grades", student=False)
     return p
 
 
