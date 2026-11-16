@@ -48,7 +48,7 @@ Operații DynamoDB folosite: `CreateTable`, `PutItem`, `GetItem`, `Query` (pe pa
 ## 2. Instalare
 
 ```bash
-git clone https://github.com/sergio-humble/aws-dynamodb-localstack-demo.git
+git clone https://github.com/sergioFiru/aws-dynamodb-localstack-demo.git
 cd aws-dynamodb-localstack-demo
 python -m venv .venv
 ```
