@@ -1,6 +1,6 @@
 # DynamoDB pe LocalStack — proiect demo
 
-Prototip care demonstrează **Amazon DynamoDB rulat local cu LocalStack**: o aplicație Python (boto3) pentru gestionarea unor task-uri, cu operații CRUD, plus aceleași operații executate cu AWS CLI.
+Prototip care demonstrează **Amazon DynamoDB rulat local cu LocalStack**: o aplicație Python (boto3) de tip catalog de note pentru studenți, cu operații CRUD, plus aceleași operații executate cu AWS CLI.
 
 - **DynamoDB** este baza de date NoSQL de tip cheie-valoare/document oferită de AWS, complet administrată; datele sunt organizate în tabele, iar fiecare element este identificat printr-o cheie primară (partition key + opțional sort key).
 - **LocalStack** este un emulator care rulează serviciile AWS (DynamoDB, S3, Lambda etc.) local, într-un container Docker, pe portul `4566`. Codul scris pentru AWS funcționează neschimbat, doar cu `endpoint_url` îndreptat spre LocalStack — fără cont AWS și fără costuri.
@@ -22,17 +22,20 @@ Prototip care demonstrează **Amazon DynamoDB rulat local cu LocalStack**: o apl
 
 ## Modelul de date
 
-Tabelul **`Tasks`**:
+Aplicația este un **catalog de note pentru studenți**, cu tabelul **`Grades`**:
 
-| Atribut      | Tip | Rol                                 |
-|--------------|-----|-------------------------------------|
-| `user_id`    | S   | **partition key** (HASH)            |
-| `task_id`    | S   | **sort key** (RANGE), generat automat (8 caractere hex) |
-| `title`      | S   | titlul task-ului                    |
-| `status`     | S   | `todo` sau `done`                   |
-| `created_at` | S   | data creării, ISO 8601 UTC          |
+| Atribut       | Tip | Rol                                      |
+|---------------|-----|------------------------------------------|
+| `student_id`  | S   | **partition key** (HASH), ex. `S1`       |
+| `course_id`   | S   | **sort key** (RANGE), ex. `C1`           |
+| `course_name` | S   | denumirea cursului                       |
+| `grade`       | N   | nota, număr întreg între 1 și 10         |
+| `semester`    | S   | semestrul, ex. `2026-1`                  |
+| `updated_at`  | S   | data ultimei modificări, ISO 8601 UTC    |
 
-Operații DynamoDB folosite: `CreateTable`, `PutItem`, `GetItem`, `Query` (pe partition key, nu `Scan`), `UpdateItem` (cu `ConditionExpression`), `DeleteItem`, `DeleteTable`.
+Cheia primară compusă (`student_id`, `course_id`) înseamnă că un student are cel mult o notă per curs, iar toate notele unui student stau în aceeași partiție și pot fi citite cu un singur `Query`.
+
+Operații DynamoDB folosite: `CreateTable`, `PutItem` (cu `ConditionExpression attribute_not_exists` — refuză duplicatele), `GetItem`, `Query` (pe partition key, nu `Scan`), `UpdateItem` (cu `ConditionExpression attribute_exists`), `DeleteItem`, `DeleteTable`. Media notelor se calculează în Python, pentru că DynamoDB nu are funcții de agregare (`AVG`, `SUM`).
 
 ## 1. Cerințe
 
@@ -129,23 +132,23 @@ Nu e nevoie de nicio configurare pentru varianta implicită. Aplicația citește
 | `AWS_DEFAULT_REGION` | `us-east-1` | regiunea |
 | `AWS_ACCESS_KEY_ID` | `test` | credențiale dummy — LocalStack acceptă orice valoare |
 | `AWS_SECRET_ACCESS_KEY` | `test` | idem |
-| `TABLE_NAME` | `Tasks` | numele tabelului |
+| `TABLE_NAME` | `Grades` | numele tabelului |
 
 Exemplu de suprascriere:
 
 ```bash
 # Linux / macOS / Git Bash
-export TABLE_NAME=TasksDemo
+export TABLE_NAME=GradesDemo
 
 # Windows - PowerShell
-$env:TABLE_NAME = "TasksDemo"
+$env:TABLE_NAME = "GradesDemo"
 ```
 
 Fișierul `.env` (pornind de la `.env.example`) este folosit **doar** de Docker Compose, pentru alternativa cu token (secțiunea 9).
 
 ## 5. Utilizare pas cu pas (CLI-ul aplicației)
 
-Toate comenzile se rulează din rădăcina proiectului, cu mediul virtual activat și LocalStack pornit. Output-urile de mai jos sunt **reale**, copiate dintr-o rulare de test. ID-urile task-urilor (`d100d32e` etc.) sunt generate aleator, deci la tine vor fi altele — folosește ID-urile afișate de comanda ta `add` / `list`.
+Toate comenzile se rulează din rădăcina proiectului, cu mediul virtual activat și LocalStack pornit. Output-urile de mai jos sunt **reale**, copiate dintr-o rulare de test (doar valorile din coloana `Actualizat` vor diferi la tine).
 
 ### Ajutor
 
@@ -154,22 +157,41 @@ python -m app.cli --help
 ```
 
 ```
-usage: python -m app.cli [-h] {init,add,get,complete,delete,list,drop} ...
+usage: python -m app.cli [-h] {init,add,get,list,update,delete,drop} ...
 
-Task-uri în DynamoDB pe LocalStack
+Catalog de note în DynamoDB pe LocalStack
 
 positional arguments:
-  {init,add,get,complete,delete,list,drop}
-    init                creează tabelul Tasks
-    add                 adaugă un task
-    get                 afișează un task
-    complete            marchează un task ca 'done' (UpdateItem)
-    delete              șterge un task (DeleteItem)
-    list                listează task-urile unui user (Query)
-    drop                șterge tabelul Tasks
+  {init,add,get,list,update,delete,drop}
+    init                creează tabelul Grades
+    add                 adaugă o notă (PutItem, refuză duplicatele)
+    get                 afișează o notă (GetItem)
+    list                toate notele unui student + media (Query)
+    update              modifică o notă existentă (UpdateItem)
+    delete              șterge o notă (DeleteItem)
+    drop                șterge tabelul Grades
 
 options:
   -h, --help            show this help message and exit
+```
+
+Fiecare comandă are propriul ajutor, de ex.:
+
+```bash
+python -m app.cli add --help
+```
+
+```
+usage: python -m app.cli add [-h] --student STUDENT --course COURSE --name
+                             NAME --grade GRADE --semester SEMESTER
+
+options:
+  -h, --help           show this help message and exit
+  --student STUDENT    ID student, ex. S1
+  --course COURSE      ID curs, ex. C1
+  --name NAME          denumirea cursului
+  --grade GRADE        nota, întreg 1-10
+  --semester SEMESTER  ex. 2026-1
 ```
 
 ### 5.1 `init` — creare tabel (CreateTable)
@@ -179,113 +201,221 @@ python -m app.cli init
 ```
 
 ```
-Tabelul 'Tasks' a fost creat (PK: user_id, SK: task_id).
+Tabelul 'Grades' a fost creat (PK: student_id, SK: course_id).
 ```
 
-### 5.2 `add` — adăugare task (PutItem)
+### 5.2 `add` — adăugare note (PutItem)
+
+Date de test: **2 studenți** (`S1`, `S2`) și **3 cursuri** (`C1` Rețele, `C2` Baze de date, `C3` Programare).
+
+| Student | C1 Rețele | C2 Baze de date | C3 Programare |
+|---------|-----------|-----------------|---------------|
+| S1      | 9         | 8               | 10            |
+| S2      | 7         | —               | 9             |
 
 ```bash
-python -m app.cli add ana "Citește documentația DynamoDB"
-python -m app.cli add ana "Scrie referatul"
-python -m app.cli add bogdan "Pregătește prezentarea"
+python -m app.cli add --student S1 --course C1 --name "Rețele" --grade 9 --semester 2026-1
+python -m app.cli add --student S1 --course C2 --name "Baze de date" --grade 8 --semester 2026-1
+python -m app.cli add --student S1 --course C3 --name "Programare" --grade 10 --semester 2026-1
+python -m app.cli add --student S2 --course C1 --name "Rețele" --grade 7 --semester 2026-1
+python -m app.cli add --student S2 --course C3 --name "Programare" --grade 9 --semester 2026-1
 ```
 
 ```
-Task adăugat pentru 'ana':
-[ ] d100d32e  Citește documentația DynamoDB  (status: todo, creat: 2026-11-16T18:39:02Z)
-Task adăugat pentru 'ana':
-[ ] 29eeef77  Scrie referatul  (status: todo, creat: 2026-11-16T18:39:03Z)
-Task adăugat pentru 'bogdan':
-[ ] 7c68b619  Pregătește prezentarea  (status: todo, creat: 2026-11-16T18:39:04Z)
+Notă adăugată:
++---------+------+----------+------+----------+----------------------+
+| Student | Curs | Denumire | Nota | Semestru | Actualizat           |
++---------+------+----------+------+----------+----------------------+
+| S1      | C1   | Rețele   | 9    | 2026-1   | 2026-11-16T20:53:18Z |
++---------+------+----------+------+----------+----------------------+
+Notă adăugată:
++---------+------+--------------+------+----------+----------------------+
+| Student | Curs | Denumire     | Nota | Semestru | Actualizat           |
++---------+------+--------------+------+----------+----------------------+
+| S1      | C2   | Baze de date | 8    | 2026-1   | 2026-11-16T20:53:20Z |
++---------+------+--------------+------+----------+----------------------+
+Notă adăugată:
++---------+------+------------+------+----------+----------------------+
+| Student | Curs | Denumire   | Nota | Semestru | Actualizat           |
++---------+------+------------+------+----------+----------------------+
+| S1      | C3   | Programare | 10   | 2026-1   | 2026-11-16T20:53:20Z |
++---------+------+------------+------+----------+----------------------+
+Notă adăugată:
++---------+------+----------+------+----------+----------------------+
+| Student | Curs | Denumire | Nota | Semestru | Actualizat           |
++---------+------+----------+------+----------+----------------------+
+| S2      | C1   | Rețele   | 7    | 2026-1   | 2026-11-16T20:53:21Z |
++---------+------+----------+------+----------+----------------------+
+Notă adăugată:
++---------+------+------------+------+----------+----------------------+
+| Student | Curs | Denumire   | Nota | Semestru | Actualizat           |
++---------+------+------------+------+----------+----------------------+
+| S2      | C3   | Programare | 9    | 2026-1   | 2026-11-16T20:53:22Z |
++---------+------+------------+------+----------+----------------------+
 ```
 
-### 5.3 `list` — task-urile unui utilizator (Query)
-
-`Query` citește doar partiția `user_id = ana`, deci task-ul lui `bogdan` nu apare:
-
-```bash
-python -m app.cli list ana
-```
-
-```
-Task-urile lui 'ana' (2):
-[ ] d100d32e  Citește documentația DynamoDB  (status: todo, creat: 2026-11-16T18:39:02Z)
-[ ] 29eeef77  Scrie referatul  (status: todo, creat: 2026-11-16T18:39:03Z)
-```
-
-### 5.4 `get` — un singur task (GetItem)
-
-```bash
-python -m app.cli get ana d100d32e
-```
-
-```
-[ ] d100d32e  Citește documentația DynamoDB  (status: todo, creat: 2026-11-16T18:39:02Z)
-```
-
-### 5.5 `complete` — marcare ca finalizat (UpdateItem)
-
-```bash
-python -m app.cli complete ana d100d32e
-```
-
-```
-Task marcat ca finalizat:
-[x] d100d32e  Citește documentația DynamoDB  (status: done, creat: 2026-11-16T18:39:02Z)
-```
-
-### 5.6 `delete` — ștergere task (DeleteItem)
+### 5.3 `get` — o singură notă (GetItem)
 
 ```bash
-python -m app.cli delete ana 29eeef77
-python -m app.cli list ana
+python -m app.cli get --student S1 --course C1
 ```
 
 ```
-Task-ul '29eeef77' a fost șters.
-Task-urile lui 'ana' (1):
-[x] d100d32e  Citește documentația DynamoDB  (status: done, creat: 2026-11-16T18:39:02Z)
++---------+------+----------+------+----------+----------------------+
+| Student | Curs | Denumire | Nota | Semestru | Actualizat           |
++---------+------+----------+------+----------+----------------------+
+| S1      | C1   | Rețele   | 9    | 2026-1   | 2026-11-16T20:53:18Z |
++---------+------+----------+------+----------+----------------------+
+```
+
+### 5.4 `list` — toate notele unui student + media (Query)
+
+`Query` citește doar partiția studentului cerut; rezultatele vin sortate după sort key (`course_id`):
+
+```bash
+python -m app.cli list --student S1
+python -m app.cli list --student S2
+```
+
+```
+Notele studentului 'S1' (3):
++---------+------+--------------+------+----------+----------------------+
+| Student | Curs | Denumire     | Nota | Semestru | Actualizat           |
++---------+------+--------------+------+----------+----------------------+
+| S1      | C1   | Rețele       | 9    | 2026-1   | 2026-11-16T20:53:18Z |
+| S1      | C2   | Baze de date | 8    | 2026-1   | 2026-11-16T20:53:20Z |
+| S1      | C3   | Programare   | 10   | 2026-1   | 2026-11-16T20:53:20Z |
++---------+------+--------------+------+----------+----------------------+
+Media: 9.00
+Notele studentului 'S2' (2):
++---------+------+------------+------+----------+----------------------+
+| Student | Curs | Denumire   | Nota | Semestru | Actualizat           |
++---------+------+------------+------+----------+----------------------+
+| S2      | C1   | Rețele     | 7    | 2026-1   | 2026-11-16T20:53:21Z |
+| S2      | C3   | Programare | 9    | 2026-1   | 2026-11-16T20:53:22Z |
++---------+------+------------+------+----------+----------------------+
+Media: 8.00
+```
+
+### 5.5 `update` — modificare notă (UpdateItem)
+
+Setează `grade` și `updated_at`. Media lui S1 crește de la 9.00 la 9.67:
+
+```bash
+python -m app.cli update --student S1 --course C2 --grade 10
+python -m app.cli list --student S1
+```
+
+```
+Notă actualizată:
++---------+------+--------------+------+----------+----------------------+
+| Student | Curs | Denumire     | Nota | Semestru | Actualizat           |
++---------+------+--------------+------+----------+----------------------+
+| S1      | C2   | Baze de date | 10   | 2026-1   | 2026-11-16T20:53:25Z |
++---------+------+--------------+------+----------+----------------------+
+Notele studentului 'S1' (3):
++---------+------+--------------+------+----------+----------------------+
+| Student | Curs | Denumire     | Nota | Semestru | Actualizat           |
++---------+------+--------------+------+----------+----------------------+
+| S1      | C1   | Rețele       | 9    | 2026-1   | 2026-11-16T20:53:18Z |
+| S1      | C2   | Baze de date | 8    | 2026-1   | 2026-11-16T20:53:20Z |
+| S1      | C3   | Programare   | 10   | 2026-1   | 2026-11-16T20:53:20Z |
++---------+------+--------------+------+----------+----------------------+
+Media: 9.00
+```
+
+### 5.6 `delete` — ștergere notă (DeleteItem)
+
+```bash
+python -m app.cli delete --student S2 --course C3
+python -m app.cli list --student S2
+```
+
+```
+Nota studentului 'S2' la cursul 'C3' a fost ștearsă.
+Notele studentului 'S2' (2):
++---------+------+------------+------+----------+----------------------+
+| Student | Curs | Denumire   | Nota | Semestru | Actualizat           |
++---------+------+------------+------+----------+----------------------+
+| S2      | C1   | Rețele     | 7    | 2026-1   | 2026-11-16T20:53:21Z |
+| S2      | C3   | Programare | 9    | 2026-1   | 2026-11-16T20:53:22Z |
++---------+------+------------+------+----------+----------------------+
+Media: 8.00
 ```
 
 ### 5.7 Tratarea erorilor
 
-Task inexistent, tabel deja creat:
+Notă duplicată (refuzată prin `ConditionExpression attribute_not_exists`):
 
 ```bash
-python -m app.cli get ana inexistent
-python -m app.cli complete ana inexistent
+python -m app.cli add --student S1 --course C1 --name "Rețele" --grade 5 --semester 2026-1
+```
+
+```
+Eroare: Nota pentru studentul 'S1' la cursul 'C1' există deja. Folosește comanda 'update' pentru a o modifica.
+```
+
+Notă invalidă: în afara intervalului 1–10, respectiv un număr care nu e întreg (al doilea caz e prins direct de argparse):
+
+```bash
+python -m app.cli add --student S2 --course C2 --name "Baze de date" --grade 11 --semester 2026-1
+python -m app.cli update --student S1 --course C1 --grade 9.5
+```
+
+```
+Eroare: Notă invalidă: 11. Nota trebuie să fie un număr întreg între 1 și 10.
+usage: python -m app.cli update [-h] --student STUDENT --course COURSE --grade
+                                GRADE
+python -m app.cli update: error: argument --grade: invalid int value: '9.5'
+```
+
+Notă inexistentă (`update`/`delete` refuzate prin `ConditionExpression attribute_exists`) și tabel deja creat:
+
+```bash
+python -m app.cli update --student S2 --course C2 --grade 8
+python -m app.cli get --student S2 --course C2
+python -m app.cli delete --student S2 --course C2
 python -m app.cli init
 ```
 
 ```
-Task-ul 'inexistent' nu există pentru 'ana'.
-Eroare: Task-ul nu există.
-Eroare: Tabelul 'Tasks' există deja.
+Eroare: Nu există nicio notă pentru studentul 'S2' la cursul 'C2'.
+Nu există nicio notă pentru studentul 'S2' la cursul 'C2'.
+Eroare: Nu există nicio notă pentru studentul 'S2' la cursul 'C2'.
+Tabelul 'Grades' a fost creat (PK: student_id, SK: course_id).
 ```
 
-În caz de eroare, codul de ieșire al comenzii este `1`.
+În caz de eroare, codul de ieșire al comenzii este `1` (respectiv `2` pentru argumente invalide, prinse de argparse).
 
 ### 5.8 `drop` — ștergere tabel (DeleteTable)
 
 ```bash
 python -m app.cli drop
-python -m app.cli list ana
+python -m app.cli list --student S1
 ```
 
 ```
-Tabelul 'Tasks' a fost șters.
-Eroare: Tabelul 'Tasks' nu există. Creează-l cu: python -m app.cli init
+Tabelul 'Grades' a fost șters.
+Notele studentului 'S1' (3):
++---------+------+--------------+------+----------+----------------------+
+| Student | Curs | Denumire     | Nota | Semestru | Actualizat           |
++---------+------+--------------+------+----------+----------------------+
+| S1      | C1   | Rețele       | 9    | 2026-1   | 2026-11-16T20:53:18Z |
+| S1      | C2   | Baze de date | 8    | 2026-1   | 2026-11-16T20:53:20Z |
+| S1      | C3   | Programare   | 10   | 2026-1   | 2026-11-16T20:53:20Z |
++---------+------+--------------+------+----------+----------------------+
+Media: 9.00
 ```
 
 ## 6. Aceleași operații cu AWS CLI
 
-Scriptul `scripts/aws_cli_examples.sh` face aceleași operații (create-table → put-item → get-item → query → update-item → delete-item → delete-table) direct cu `aws --endpoint-url=http://localhost:4566 dynamodb ...`. Scriptul setează singur credențialele dummy `test`/`test` și regiunea `us-east-1`, deci **nu** e nevoie de `aws configure`.
+Scriptul `scripts/aws_cli_examples.sh` face aceleași operații (create-table → put-item → put-item duplicat refuzat → get-item → query → update-item → delete-item → delete-table) direct cu `aws --endpoint-url=http://localhost:4566 dynamodb ...`. Scriptul setează singur credențialele dummy `test`/`test` și regiunea `us-east-1`, deci **nu** e nevoie de `aws configure`.
 
 Instalare AWS CLI (alege una):
 - varianta oficială (v2): <https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html>
 - sau, în mediul virtual: `pip install awscli` (v1 — **aceasta este varianta cu care a fost testat scriptul**: `aws-cli/1.46.3`)
 
-> Scriptul creează și șterge el însuși tabelul `Tasks`, deci rulează-l când tabelul **nu** există (de ex. după `python -m app.cli drop`). Pe Windows rulează-l din Git Bash.
+> Scriptul creează și șterge el însuși tabelul `Grades`, deci rulează-l când tabelul **nu** există (de ex. după `python -m app.cli drop`). Pe Windows rulează-l din Git Bash. În script, denumirile cursurilor sunt scrise fără diacritice („Retele”), pentru a evita probleme de codificare a argumentelor în consolele Windows.
 
 ```bash
 bash scripts/aws_cli_examples.sh
@@ -293,41 +423,29 @@ bash scripts/aws_cli_examples.sh
 
 ```
 == 1. create-table (init) ==
-Tasks	ACTIVE
-== 2. put-item (add) ==
+Grades	ACTIVE
+== 2. put-item (add, refuză duplicatele) ==
+OK: S1 / C1 / nota 9
+OK: S1 / C2 / nota 8
+== 3. put-item duplicat (eroare așteptată) ==
+
+An error occurred (ConditionalCheckFailedException) when calling the PutItem operation: The conditional request failed
+-> duplicat refuzat, cum era de așteptat
+== 4. get-item (get) ==
+S1	C1	Retele	9	2026-1
+== 5. query (list) ==
+---------------------------------------
+|                Query                |
++----+----------------+----+----------+
+|  C1|  Retele        |  9 |  2026-1  |
+|  C2|  Baze de date  |  8 |  2026-1  |
++----+----------------+----+----------+
+== 6. update-item (update) ==
+C1	10	2026-11-16T13:00:00Z
+== 7. delete-item (delete) ==
 OK
-== 3. get-item (get) ==
-{
-    "Item": {
-        "created_at": {
-            "S": "2026-11-16T12:00:00Z"
-        },
-        "task_id": {
-            "S": "cli00001"
-        },
-        "title": {
-            "S": "Task creat din AWS CLI"
-        },
-        "user_id": {
-            "S": "ana"
-        },
-        "status": {
-            "S": "todo"
-        }
-    }
-}
-== 4. query (list) ==
-------------------------------------------------
-|                     Query                    |
-+-----------+--------------------------+-------+
-|  cli00001 |  Task creat din AWS CLI  |  todo |
-+-----------+--------------------------+-------+
-== 5. update-item (complete) ==
-cli00001	done
-== 6. delete-item (delete) ==
-OK
-== 7. delete-table (drop) ==
-Tasks
+== 8. delete-table (drop) ==
+Grades
 ```
 
 Corespondența comenzilor:
@@ -335,33 +453,40 @@ Corespondența comenzilor:
 | CLI aplicație | AWS CLI | API DynamoDB |
 |---|---|---|
 | `init` | `aws dynamodb create-table` | CreateTable |
-| `add` | `aws dynamodb put-item` | PutItem |
+| `add` | `aws dynamodb put-item --condition-expression "attribute_not_exists(student_id)"` | PutItem |
 | `get` | `aws dynamodb get-item` | GetItem |
-| `list` | `aws dynamodb query` | Query |
-| `complete` | `aws dynamodb update-item` | UpdateItem |
+| `list` | `aws dynamodb query --key-condition-expression "student_id = :s"` | Query |
+| `update` | `aws dynamodb update-item --condition-expression "attribute_exists(student_id)"` | UpdateItem |
 | `delete` | `aws dynamodb delete-item` | DeleteItem |
 | `drop` | `aws dynamodb delete-table` | DeleteTable |
 
 ## 7. Rulare teste
 
-Testele sunt end-to-end: rulează contra LocalStack (care trebuie să fie pornit) și folosesc un tabel separat, `Tasks_test`, creat și șters automat, deci nu afectează datele din `Tasks`.
+Testele sunt end-to-end: rulează contra LocalStack (care trebuie să fie pornit) și folosesc un tabel separat, `Grades_test`, creat și șters automat, deci nu afectează datele din `Grades`. Acoperă: add, duplicat refuzat, get, list + media, update, delete, notă invalidă (0, 11, -3, 9.5, "9") și tabel inexistent.
 
 ```bash
 python -m pytest -v
 ```
 
-Output (fragment; liniile cu căile locale `cachedir`/`rootdir` au fost omise):
+Output (fragment; liniile cu căile locale `platform`/`cachedir`/`rootdir` au fost omise):
 
 ```
 ============================= test session starts =============================
-platform win32 -- Python 3.11.15, pytest-9.2.0, pluggy-1.7.0
-collecting ... collected 3 items
+collecting ... collected 11 items
 
-tests/test_tasks.py::test_crud_flow PASSED                               [ 33%]
-tests/test_tasks.py::test_missing_task_errors PASSED                     [ 66%]
-tests/test_tasks.py::test_missing_table_error PASSED                     [100%]
+tests/test_grades.py::test_add_and_get PASSED                            [  9%]
+tests/test_grades.py::test_duplicate_refused PASSED                      [ 18%]
+tests/test_grades.py::test_list_and_average PASSED                       [ 27%]
+tests/test_grades.py::test_update PASSED                                 [ 36%]
+tests/test_grades.py::test_delete PASSED                                 [ 45%]
+tests/test_grades.py::test_invalid_grade[0] PASSED                       [ 54%]
+tests/test_grades.py::test_invalid_grade[11] PASSED                      [ 63%]
+tests/test_grades.py::test_invalid_grade[-3] PASSED                      [ 72%]
+tests/test_grades.py::test_invalid_grade[9.5] PASSED                     [ 81%]
+tests/test_grades.py::test_invalid_grade[9] PASSED                       [ 90%]
+tests/test_grades.py::test_missing_table PASSED                          [100%]
 
-============================== 3 passed in 2.01s ==============================
+============================= 11 passed in 3.56s ==============================
 ```
 
 > Folosește `python -m pytest` (nu doar `pytest`), ca directorul proiectului să fie în `sys.path` și pachetul `app` să poată fi importat.
@@ -384,7 +509,7 @@ docker compose down -v
 Datele **nu** sunt persistente: la fiecare pornire LocalStack începe gol (tabelul trebuie recreat cu `init`). Cu LocalStack oprit, aplicația afișează:
 
 ```bash
-python -m app.cli list ana
+python -m app.cli list --student S1
 ```
 
 ```
@@ -454,7 +579,7 @@ lsof -i :4566                      # Linux / macOS
 
 **„Nu mă pot conecta la http://localhost:4566”** — LocalStack nu e pornit sau încă nu e `healthy`. Rulează `docker compose ps` și așteaptă `(healthy)`.
 
-**„Tabelul 'Tasks' nu există”** — LocalStack nu păstrează datele între reporniri. Rulează `python -m app.cli init`.
+**„Tabelul 'Grades' nu există”** — LocalStack nu păstrează datele între reporniri. Rulează `python -m app.cli init`.
 
 **`ModuleNotFoundError: No module named 'boto3'` sau `'app'`** — mediul virtual nu e activat, ori nu ești în rădăcina proiectului. Activează `.venv` (secțiunea 2) și rulează din directorul proiectului, cu `python -m ...`.
 
@@ -477,7 +602,7 @@ aws-dynamodb-localstack-demo/
 ├── scripts/
 │   └── aws_cli_examples.sh    # aceleași operații cu AWS CLI
 ├── tests/
-│   └── test_tasks.py          # teste end-to-end pytest contra LocalStack
+│   └── test_grades.py         # teste end-to-end pytest contra LocalStack
 ├── docker-compose.yml         # LocalStack 4.12, port 4566, healthcheck
 ├── requirements.txt           # boto3, pytest
 ├── .env.example               # model pentru varianta cu token (fără secrete)
